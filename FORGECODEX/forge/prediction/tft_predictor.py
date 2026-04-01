@@ -1,0 +1,120 @@
+from collections import deque
+from pathlib import Path
+import sys
+
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import (
+    FAILURE_LOWER_BOUND_STROKES,
+    TFT_ENCODER_LENGTH,
+    TFT_MODEL_PATH,
+    TFT_PREDICTION_LENGTH,
+)
+
+try:
+    import torch
+    from pytorch_forecasting import TemporalFusionTransformer
+except ImportError:  # pragma: no cover
+    torch = None
+    TemporalFusionTransformer = None
+
+
+class FORGEPredictor:
+    def __init__(self, model_path: str = TFT_MODEL_PATH) -> None:
+        if torch is None or TemporalFusionTransformer is None:
+            raise ImportError("torch and pytorch_forecasting are required for FORGEPredictor")
+        self.model_path = model_path
+        if not Path(self.model_path).exists():
+            raise FileNotFoundError(f"TFT checkpoint not found at {self.model_path}")
+        self.model = TemporalFusionTransformer.load_from_checkpoint(self.model_path)
+        self.model.eval()
+        self.feature_buffer = deque(maxlen=TFT_ENCODER_LENGTH)
+        self.fallback_tool_id = self._resolve_fallback_tool_id()
+
+    def predict(self, feature_vector_dict: dict) -> dict | None:
+        self.feature_buffer.append(dict(feature_vector_dict))
+        if len(self.feature_buffer) < TFT_ENCODER_LENGTH:
+            return None
+
+        frame = self._build_inference_frame()
+        with torch.no_grad():
+            quantiles = self.model.predict(frame, mode="quantiles")
+        return self.get_prediction_dict(quantiles)
+
+    def _build_inference_frame(self) -> pd.DataFrame:
+        rows = []
+        normalized_tool_id = self._normalize_tool_id(
+            str(self.feature_buffer[-1].get("tool_id", self.fallback_tool_id))
+        )
+        for item in self.feature_buffer:
+            row = dict(item)
+            row["stroke"] = int(row.get("stroke_num", row.get("stroke", 0)))
+            row["tool_id"] = normalized_tool_id
+            rows.append(row)
+
+        last_stroke = int(rows[-1]["stroke"])
+        tool_id = normalized_tool_id
+        cutting_speed = float(rows[-1].get("cutting_speed", 0.0))
+
+        for step in range(1, TFT_PREDICTION_LENGTH + 1):
+            rows.append(
+                {
+                    "tool_id": tool_id,
+                    "stroke": last_stroke + step,
+                    "cutting_speed": cutting_speed,
+                    "rms": rows[-1]["rms"],
+                    "kurtosis": rows[-1]["kurtosis"],
+                    "spectral_centroid": rows[-1]["spectral_centroid"],
+                    "high_low_ratio": rows[-1]["high_low_ratio"],
+                    "crest_factor": rows[-1]["crest_factor"],
+                    "biometric_wear": rows[-1]["biometric_wear"],
+                    "twin_divergence": rows[-1]["twin_divergence"],
+                    "remaining_life": rows[-1].get("remaining_life", 0.0),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _resolve_fallback_tool_id(self) -> str:
+        dataset_parameters = getattr(self.model, "dataset_parameters", {}) or {}
+        encoders = dataset_parameters.get("categorical_encoders", {})
+        for key in ["tool_id", "__group_id__tool_id"]:
+            encoder = encoders.get(key)
+            classes = getattr(encoder, "classes_", None)
+            if isinstance(classes, dict) and classes:
+                return next(iter(classes.keys()))
+        return "tool_000"
+
+    def _normalize_tool_id(self, tool_id: str) -> str:
+        dataset_parameters = getattr(self.model, "dataset_parameters", {}) or {}
+        encoders = dataset_parameters.get("categorical_encoders", {})
+        for key in ["tool_id", "__group_id__tool_id"]:
+            encoder = encoders.get(key)
+            classes = getattr(encoder, "classes_", None)
+            if isinstance(classes, dict):
+                if tool_id in classes:
+                    return tool_id
+                return self.fallback_tool_id
+        return tool_id
+
+    def get_prediction_dict(self, quantiles) -> dict:
+        prediction_row = quantiles[0][0] if getattr(quantiles[0], "ndim", 1) > 1 else quantiles[0]
+        lower_bound = max(0.0, float(prediction_row[0]))
+        median = max(0.0, float(prediction_row[3]))
+        upper_bound = max(0.0, float(prediction_row[6]))
+        ordered_bounds = sorted([lower_bound, median, upper_bound])
+        lower_bound, median, upper_bound = ordered_bounds[0], ordered_bounds[1], ordered_bounds[2]
+        if median <= lower_bound:
+            median = lower_bound + 1.0
+        if upper_bound <= median:
+            upper_bound = median + 1.0
+        failure_probability = max(0.0, min(1.0, 1.0 - (lower_bound / FAILURE_LOWER_BOUND_STROKES)))
+        return {
+            "median_remaining_strokes": median,
+            "confidence_band": (lower_bound, upper_bound),
+            "failure_probability": failure_probability,
+            "confidence_pct": 80,
+        }
