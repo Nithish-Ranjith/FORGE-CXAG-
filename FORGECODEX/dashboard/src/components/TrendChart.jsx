@@ -1,3 +1,4 @@
+import React from "react";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 function normalize(history, key) {

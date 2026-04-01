@@ -45,6 +45,8 @@ class SensorCapture:
         self.demo_audio = None
         self.mpu = MPU6050Reader()
         self.pt100 = PT100Reader()
+        self.last_raw_rms = 0.0
+        self._demo_stroke_count = 0
         self._setup_gpio()
         self._setup_audio()
 
@@ -87,22 +89,31 @@ class SensorCapture:
                 return
             except Exception as exc:
                 print(f"SensorCapture demo audio load error: {exc}", file=sys.stderr)
+        self.demo_audio = None  # Force synthetic mode if file load fails
+
+    def _generate_synthetic_chunk(self) -> np.ndarray:
+        self._demo_stroke_count += 1
+        wear_pct = min(1.0, self._demo_stroke_count / 500.0)
+        f0 = 1000.0 + (3000.0 * wear_pct)
+        f1 = 3000.0 + (9000.0 * wear_pct)
         time_axis = np.arange(self.chunk_size, dtype=np.float32) / np.float32(self.sample_rate)
-        signal_low = np.sin(np.float32(2.0 * np.pi * 1000.0) * time_axis)
-        signal_high = np.sin(np.float32(2.0 * np.pi * 3000.0) * time_axis)
-        self.demo_audio = (np.float32(0.05) * signal_low) + (np.float32(0.03) * signal_high)
+        signal_low = np.sin(np.float32(2.0 * np.pi * f0) * time_axis)
+        signal_high = np.sin(np.float32(2.0 * np.pi * f1) * time_axis)
+        chunk = (np.float32(0.05 + 0.05 * wear_pct) * signal_low) + (np.float32(0.03 + 0.07 * wear_pct) * signal_high)
+        noise = np.random.normal(0, 0.01 + 0.02 * wear_pct, self.chunk_size).astype(np.float32)
+        return chunk + noise
 
     def capture_chunk(self) -> np.ndarray:
         if self.demo_mode:
-            if self.demo_audio is None or len(self.demo_audio) < self.chunk_size:
-                self._load_demo_audio()
-            if self.demo_audio is None:
-                return np.zeros(self.chunk_size, dtype=np.float32)
-            max_offset = max(1, len(self.demo_audio) - self.chunk_size + 1)
-            offset = int(np.random.randint(0, max_offset))
-            chunk = self.demo_audio[offset : offset + self.chunk_size]
-            if len(chunk) < self.chunk_size:
-                chunk = np.pad(chunk, (0, self.chunk_size - len(chunk)))
+            if self.demo_audio is not None and len(self.demo_audio) >= self.chunk_size:
+                max_offset = max(1, len(self.demo_audio) - self.chunk_size + 1)
+                offset = int(np.random.randint(0, max_offset))
+                chunk = self.demo_audio[offset : offset + self.chunk_size]
+                if len(chunk) < self.chunk_size:
+                    chunk = np.pad(chunk, (0, self.chunk_size - len(chunk)))
+            else:
+                chunk = self._generate_synthetic_chunk()
+            self.last_raw_rms = float(np.sqrt(np.mean(np.square(chunk))))
             return self._normalize_audio(chunk.astype(np.float32))
         recorded = sd.rec(
             frames=self.chunk_size,
@@ -113,6 +124,7 @@ class SensorCapture:
         )
         sd.wait()
         mono = recorded.reshape(-1)
+        self.last_raw_rms = float(np.sqrt(np.mean(np.square(mono))))
         return self._normalize_audio(mono.astype(np.float32))
 
     def _normalize_audio(self, chunk: np.ndarray) -> np.ndarray:
@@ -123,8 +135,7 @@ class SensorCapture:
         return normalized.astype(np.float32)
 
     def is_cutting(self, audio_chunk: np.ndarray) -> bool:
-        rms_value = float(np.sqrt(np.mean(np.square(audio_chunk))))
-        is_active = rms_value > CUTTING_RMS_THRESHOLD
+        is_active = self.last_raw_rms > CUTTING_RMS_THRESHOLD
         self.blink_led(is_active)
         return is_active
 

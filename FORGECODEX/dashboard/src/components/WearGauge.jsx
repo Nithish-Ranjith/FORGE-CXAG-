@@ -1,3 +1,4 @@
+import React from "react";
 export default function WearGauge({ wearPct, alertLevel }) {
   const bounded = Math.max(0, Math.min(100, wearPct ?? 0));
   const strokeColor = bounded < 50 ? "#22c55e" : bounded < 75 ? "#f59e0b" : "#ef4444";

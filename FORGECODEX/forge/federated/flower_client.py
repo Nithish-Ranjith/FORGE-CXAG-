@@ -53,33 +53,54 @@ class FORGEFederatedClient(fl.client.NumPyClient):
 
     def _local_fine_tune(self, epochs: int):
         local_data = self._load_local_training_frame()
-        if local_data.empty:
+        if local_data.empty or "stroke" not in local_data.columns:
             return 0.0
+            
+        from forge.prediction.train_tft import build_dataset
+        try:
+            dataset = build_dataset(local_data)
+            dataloader = dataset.to_dataloader(train=True, batch_size=16, num_workers=0)
+        except Exception as e:
+            print(f"Failed to build local dataset for federated fit: {e}")
+            return 0.0
+            
         optimizer = torch.optim.Adam(self.predictor.model.parameters(), lr=1e-4)
         self.predictor.model.train()
         last_loss = 0.0
+        
         for _ in range(epochs):
-            optimizer.zero_grad()
-            synthetic_loss = torch.tensor(float(local_data.shape[0]) / max(1.0, float(local_data.shape[0])), requires_grad=True)
-            synthetic_loss.backward()
-            optimizer.step()
-            last_loss = float(synthetic_loss.detach().cpu().item())
+            for x, y in dataloader:
+                optimizer.zero_grad()
+                out, _ = self.predictor.model(x)
+                loss = self.predictor.model.loss(out, y)
+                loss.backward()
+                optimizer.step()
+                last_loss = float(loss.detach().cpu().item())
+                
         self.predictor.model.eval()
         return last_loss
 
     def _load_local_training_frame(self) -> pd.DataFrame:
-        rows = self.db.conn.execute(
+        import sqlite3
+        conn = sqlite3.connect(self.db.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
             """
-            SELECT timestamp, stroke_num, rms, kurtosis, spectral_centroid,
+            SELECT tool_id, stroke_num as stroke, rms, kurtosis, spectral_centroid,
                    high_low_ratio, crest_factor, biometric_wear, twin_divergence
             FROM sensor_readings
             ORDER BY timestamp DESC
             LIMIT 500
             """
         ).fetchall()
+        conn.close()
+        
         if not rows:
             return pd.DataFrame()
+            
         frame = pd.DataFrame([dict(row) for row in rows])
+        frame["cutting_speed"] = 2.5
+        frame["remaining_life"] = np.maximum(0, 500.0 - frame["stroke"])
         frame["failure_probability"] = np.clip(frame["high_low_ratio"].fillna(0.0), 0.0, 1.0)
         return frame
 

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import math
+import queue
 import threading
 import time
 from pathlib import Path
@@ -64,6 +65,8 @@ class FORGEOrchestrator:
         self.maintenance_ai = FORGEMaintenanceAI(MACHINE_ID, self.audit_log)
         self._api_thread = threading.Thread(target=run_api_app, daemon=True)
         self._api_started = False
+        self.data_queue = queue.Queue(maxsize=10)
+        self._shutdown_event = threading.Event()
 
     def start_services(self) -> None:
         if not self._api_started:
@@ -71,13 +74,8 @@ class FORGEOrchestrator:
             self._api_started = True
         self._send_startup_message()
 
-    def run(self, max_iterations: int | None = None) -> None:
-        self.start_services()
-        iterations = 0
-        while True:
-            if max_iterations is not None and iterations >= max_iterations:
-                break
-            iterations += 1
+    def capture_worker(self) -> None:
+        while not self._shutdown_event.is_set():
             try:
                 audio_chunk = self.sensor_capture.capture_chunk()
                 vibration = self.sensor_capture.read_vibration()
@@ -94,6 +92,27 @@ class FORGEOrchestrator:
                 time.sleep(IDLE_SLEEP_SEC)
                 continue
 
+            try:
+                self.data_queue.put((audio_chunk, vibration, temperature), timeout=1.0)
+            except queue.Full:
+                pass
+
+    def run(self, max_iterations: int | None = None) -> None:
+        self.start_services()
+        capture_thread = threading.Thread(target=self.capture_worker, daemon=True)
+        capture_thread.start()
+        iterations = 0
+        while not self._shutdown_event.is_set():
+            if max_iterations is not None and iterations >= max_iterations:
+                self._shutdown_event.set()
+                break
+            
+            try:
+                audio_chunk, vibration, temperature = self.data_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+                
+            iterations += 1
             self.stroke_count += 1
 
             if self.stroke_count <= 20:
@@ -110,8 +129,8 @@ class FORGEOrchestrator:
                         calibration_factor,
                         self.biometrics.identity_vector.tolist(),
                     )
-                time.sleep(IDLE_SLEEP_SEC)
-                continue
+                if self.stroke_count < 20:
+                    continue
 
             try:
                 features = self.feature_extractor.extract(audio_chunk, vibration)
@@ -172,10 +191,11 @@ class FORGEOrchestrator:
                 )
 
             if prediction is not None and decision is not None:
-                should_alert = (
-                    float(prediction.get("failure_probability", 0.0)) > ALERT_FAILURE_PROB_THRESHOLD
-                    and (self.stroke_count - self.last_alert_stroke) > ALERT_COOLDOWN_STROKES
-                )
+                should_alert = False
+                if float(prediction.get("failure_probability", 0.0)) > self.threshold_updater.current_threshold:
+                    if (self.stroke_count - self.last_alert_stroke) > ALERT_COOLDOWN_STROKES or twin_result.get("alert_level") == "CRITICAL":
+                        should_alert = True
+                
                 if should_alert:
                     feature_history_df = self.feature_extractor.to_dataframe_row(features, self.stroke_count, TOOL_ID)
                     message, alert_id = self.trust_layer.compose_alert(
@@ -204,7 +224,7 @@ class FORGEOrchestrator:
                 "stroke_count": self.stroke_count,
             }
             try:
-                asyncio.run(api_broadcast_state(forge_state))
+                api_broadcast_state(forge_state)
             except Exception:
                 pass
 
@@ -212,8 +232,6 @@ class FORGEOrchestrator:
                 self.sensor_capture.blink_led(True)
             except Exception:
                 pass
-
-            time.sleep(IDLE_SLEEP_SEC)
 
     def _send_startup_message(self) -> None:
         if SUPERVISOR_PHONE:

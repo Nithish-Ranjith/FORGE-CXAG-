@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { BoltIcon } from "@heroicons/react/24/outline";
 
@@ -10,7 +10,8 @@ import TrendChart from "./components/TrendChart.jsx";
 import WearGauge from "./components/WearGauge.jsx";
 import useWebSocket from "./hooks/useWebSocket.js";
 
-const apiBase = `http://${window.location.hostname || "localhost"}:8000`;
+const apiPort = import.meta.env.VITE_API_PORT || "8001";
+const apiBase = `http://${window.location.hostname || "localhost"}:${apiPort}`;
 
 const shellStyle = {
   minHeight: "100vh",

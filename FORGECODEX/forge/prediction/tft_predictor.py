@@ -60,20 +60,27 @@ class FORGEPredictor:
         tool_id = normalized_tool_id
         cutting_speed = float(rows[-1].get("cutting_speed", 0.0))
 
+        wear_slope = 0.0
+        twin_slope = 0.0
+        if len(rows) > 1:
+            wear_slope = max(0.0, float(rows[-1].get("biometric_wear", 0.0)) - float(rows[-2].get("biometric_wear", 0.0)))
+            twin_slope = max(0.0, float(rows[-1].get("twin_divergence", 0.0)) - float(rows[-2].get("twin_divergence", 0.0)))
+
         for step in range(1, TFT_PREDICTION_LENGTH + 1):
+            last_row = rows[-1]
             rows.append(
                 {
                     "tool_id": tool_id,
                     "stroke": last_stroke + step,
                     "cutting_speed": cutting_speed,
-                    "rms": rows[-1]["rms"],
-                    "kurtosis": rows[-1]["kurtosis"],
-                    "spectral_centroid": rows[-1]["spectral_centroid"],
-                    "high_low_ratio": rows[-1]["high_low_ratio"],
-                    "crest_factor": rows[-1]["crest_factor"],
-                    "biometric_wear": rows[-1]["biometric_wear"],
-                    "twin_divergence": rows[-1]["twin_divergence"],
-                    "remaining_life": rows[-1].get("remaining_life", 0.0),
+                    "rms": last_row["rms"],
+                    "kurtosis": last_row["kurtosis"],
+                    "spectral_centroid": last_row["spectral_centroid"],
+                    "high_low_ratio": last_row["high_low_ratio"],
+                    "crest_factor": last_row["crest_factor"],
+                    "biometric_wear": max(0.0, float(last_row.get("biometric_wear", 0.0)) + wear_slope),
+                    "twin_divergence": max(0.0, float(last_row.get("twin_divergence", 0.0)) + twin_slope),
+                    "remaining_life": max(0.0, float(last_row.get("remaining_life", 0.0)) - 1.0),
                 }
             )
         return pd.DataFrame(rows)

@@ -29,9 +29,16 @@ class AuditLog:
                 stroke_num INTEGER,
                 rms REAL,
                 kurtosis REAL,
-                spectral_centroid REAL,
-                high_low_ratio REAL,
+                skewness REAL,
                 crest_factor REAL,
+                peak_amplitude REAL,
+                spectral_centroid REAL,
+                spectral_bandwidth REAL,
+                low_band_energy REAL,
+                mid_band_energy REAL,
+                high_band_energy REAL,
+                high_low_ratio REAL,
+                dominant_freq REAL,
                 biometric_wear REAL,
                 twin_divergence REAL,
                 temperature REAL,
@@ -120,10 +127,12 @@ class AuditLog:
                     """
                     INSERT INTO sensor_readings (
                         machine_id, tool_id, timestamp, stroke_num, rms, kurtosis,
-                        spectral_centroid, high_low_ratio, crest_factor, biometric_wear,
+                        skewness, crest_factor, peak_amplitude, spectral_centroid,
+                        spectral_bandwidth, low_band_energy, mid_band_energy,
+                        high_band_energy, high_low_ratio, dominant_freq, biometric_wear,
                         twin_divergence, temperature, ax, ay, az
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         machine_id,
@@ -132,9 +141,16 @@ class AuditLog:
                         stroke_num,
                         float(features.get("rms", 0.0)),
                         float(features.get("kurtosis", 0.0)),
-                        float(features.get("spectral_centroid", 0.0)),
-                        float(features.get("high_low_ratio", 0.0)),
+                        float(features.get("skewness", 0.0)),
                         float(features.get("crest_factor", 0.0)),
+                        float(features.get("peak_amplitude", 0.0)),
+                        float(features.get("spectral_centroid", 0.0)),
+                        float(features.get("spectral_bandwidth", 0.0)),
+                        float(features.get("low_band_energy", 0.0)),
+                        float(features.get("mid_band_energy", 0.0)),
+                        float(features.get("high_band_energy", 0.0)),
+                        float(features.get("high_low_ratio", 0.0)),
+                        float(features.get("dominant_freq", 0.0)),
                         float(features.get("biometric_wear", 0.0)),
                         float(features.get("twin_divergence", 0.0)),
                         float(temperature),

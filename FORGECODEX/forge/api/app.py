@@ -5,7 +5,7 @@ import socket
 import sys
 import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -14,7 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config import API_HOST, API_PORT, DB_PATH, MACHINE_ID, TOOL_ID
 from forge.db.audit_log import AuditLog
-
+from forge.llm.maintenance_assistant import FORGEMaintenanceAI
+from queue import Queue, Empty
 
 class OverrideRequest(BaseModel):
     alert_id: str
@@ -68,9 +69,14 @@ class ForgeAPIState:
         self.update_state(forge_state)
         await self.manager.broadcast(
             {
+                "machine_id": forge_state.get("machine_id", MACHINE_ID),
+                "tool_id": forge_state.get("tool_id", TOOL_ID),
                 "feature_vector": forge_state.get("features", {}),
                 "prediction": forge_state.get("prediction"),
+                "decision": forge_state.get("decision"),
                 "twin_result": forge_state.get("twin_result"),
+                "stroke_count": forge_state.get("stroke_count"),
+                "alert_id": forge_state.get("alert_id"),
             }
         )
 
@@ -116,6 +122,20 @@ class ForgeAPIState:
 
 app = FastAPI(title="FORGE API")
 state_store = ForgeAPIState()
+llm_ai = FORGEMaintenanceAI(MACHINE_ID, state_store.db)
+state_queue = Queue()
+
+@app.on_event("startup")
+async def startup_event():
+    async def _broadcaster():
+        while True:
+            try:
+                state = state_queue.get_nowait()
+                await state_store.broadcast_state(state)
+            except Empty:
+                pass
+            await asyncio.sleep(0.1)
+    asyncio.create_task(_broadcaster())
 
 
 @app.get("/health")
@@ -142,8 +162,24 @@ def post_override(payload: OverrideRequest) -> dict:
 
 
 @app.post("/whatsapp-webhook")
-def whatsapp_webhook() -> dict:
-    return {"status": "received", "timestamp": datetime.now().isoformat()}
+async def whatsapp_webhook(request: Request) -> Response:
+    try:
+        form = await request.form()
+        body = str(form.get("Body", "")).strip()
+    except Exception:
+        body = ""
+
+    alert_id = state_store.current_state.get("alert_id")
+    
+    if body in ["1", "2", "3", "4"] and alert_id:
+        state_store.db.log_override(alert_id, MACHINE_ID, int(body))
+        resp_body = f"Override {body} logged successfully."
+    else:
+        answer = llm_ai.ask(body, state_store.current_state)
+        resp_body = str(answer)
+        
+    xml_str = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{resp_body}</Message></Response>'
+    return Response(content=xml_str, media_type="application/xml")
 
 
 @app.get("/history")
@@ -172,8 +208,8 @@ def update_state(forge_state: dict) -> None:
     state_store.update_state(forge_state)
 
 
-async def broadcast_state(forge_state: dict) -> None:
-    await state_store.broadcast_state(forge_state)
+def broadcast_state(forge_state: dict) -> None:
+    state_queue.put(forge_state)
 
 
 def run_app() -> None:

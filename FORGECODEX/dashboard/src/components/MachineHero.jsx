@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const stageLabels = ["Sensing", "Features", "Digital Twin", "TFT", "Decision", "Alert"];
 

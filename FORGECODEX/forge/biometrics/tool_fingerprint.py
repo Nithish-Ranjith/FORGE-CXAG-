@@ -29,6 +29,8 @@ class ToolBiometrics:
         self.enrollment_rms_values: list[float] = []
         self.calibrated = False
         self.enrolled_date: str | None = None
+        self._last_mfcc_chunk_hash = None
+        self._last_mfcc = None
 
     def enroll_stroke(self, audio_chunk: np.ndarray, sr: int = 44100):
         current_mfcc = self._extract_mfcc(audio_chunk, sr)
@@ -69,5 +71,11 @@ class ToolBiometrics:
         self.enrolled_date = None
 
     def _extract_mfcc(self, audio_chunk: np.ndarray, sr: int) -> np.ndarray:
+        chunk_hash = float(np.sum(audio_chunk))
+        if self._last_mfcc_chunk_hash == chunk_hash and self._last_mfcc is not None:
+            return self._last_mfcc
+            
         mfcc = librosa.feature.mfcc(y=np.asarray(audio_chunk, dtype=np.float32), sr=sr, n_mfcc=MFCC_COUNT)
-        return np.mean(mfcc, axis=1)
+        self._last_mfcc = np.mean(mfcc, axis=1)
+        self._last_mfcc_chunk_hash = chunk_hash
+        return self._last_mfcc

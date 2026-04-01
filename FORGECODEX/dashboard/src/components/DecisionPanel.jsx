@@ -1,3 +1,4 @@
+import React from "react";
 const labels = {
   REPLACE_NOW: "Replace Now",
   COMPLETE_JOB_THEN_REPLACE: "Complete Job",
