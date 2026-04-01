@@ -1,12 +1,16 @@
 from collections import deque
+import os
 from pathlib import Path
 import sys
+import tempfile
 
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from config import (
     FAILURE_LOWER_BOUND_STROKES,
@@ -30,10 +34,31 @@ class FORGEPredictor:
         self.model_path = model_path
         if not Path(self.model_path).exists():
             raise FileNotFoundError(f"TFT checkpoint not found at {self.model_path}")
-        self.model = TemporalFusionTransformer.load_from_checkpoint(self.model_path)
+        self.model = self._load_model_checkpoint(self.model_path)
         self.model.eval()
+        self.model.to("cpu")
         self.feature_buffer = deque(maxlen=TFT_ENCODER_LENGTH)
         self.fallback_tool_id = self._resolve_fallback_tool_id()
+
+    def _load_model_checkpoint(self, model_path: str):
+        try:
+            return TemporalFusionTransformer.load_from_checkpoint(model_path)
+        except TypeError as exc:
+            message = str(exc)
+            if "monotone_constraints" not in message and "monotone_constaints" not in message:
+                raise
+            checkpoint = torch.load(model_path, map_location="cpu")
+            hyper_parameters = dict(checkpoint.get("hyper_parameters", {}))
+            hyper_parameters.pop("monotone_constraints", None)
+            hyper_parameters.pop("monotone_constaints", None)
+            checkpoint["hyper_parameters"] = hyper_parameters
+            with tempfile.NamedTemporaryFile(suffix=".ckpt", delete=False) as handle:
+                temp_path = handle.name
+            try:
+                torch.save(checkpoint, temp_path)
+                return TemporalFusionTransformer.load_from_checkpoint(temp_path)
+            finally:
+                Path(temp_path).unlink(missing_ok=True)
 
     def predict(self, feature_vector_dict: dict) -> dict | None:
         self.feature_buffer.append(dict(feature_vector_dict))
@@ -42,7 +67,11 @@ class FORGEPredictor:
 
         frame = self._build_inference_frame()
         with torch.no_grad():
-            quantiles = self.model.predict(frame, mode="quantiles")
+            quantiles = self.model.predict(
+                frame,
+                mode="quantiles",
+                trainer_kwargs={"accelerator": "cpu", "devices": 1, "logger": False, "enable_progress_bar": False},
+            )
         return self.get_prediction_dict(quantiles)
 
     def _build_inference_frame(self) -> pd.DataFrame:

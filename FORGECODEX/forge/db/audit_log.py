@@ -111,6 +111,27 @@ class AuditLog:
         with self.conn:
             for statement in statements:
                 self.conn.execute(statement)
+        self._ensure_sensor_readings_columns()
+
+    def _ensure_sensor_readings_columns(self) -> None:
+        expected_columns = {
+            "skewness": "REAL",
+            "peak_amplitude": "REAL",
+            "spectral_bandwidth": "REAL",
+            "low_band_energy": "REAL",
+            "mid_band_energy": "REAL",
+            "high_band_energy": "REAL",
+            "dominant_freq": "REAL",
+        }
+        existing_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(sensor_readings)").fetchall()
+        }
+        with self.conn:
+            for column_name, column_type in expected_columns.items():
+                if column_name not in existing_columns:
+                    self.conn.execute(
+                        f"ALTER TABLE sensor_readings ADD COLUMN {column_name} {column_type}"
+                    )
 
     def log_sensor(
         self,
